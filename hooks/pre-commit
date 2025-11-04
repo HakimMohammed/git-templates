@@ -1,0 +1,74 @@
+#!/bin/bash
+# Pre-commit hook: generate resume.txt + README.md using StarCoder 3B
+
+# Get staged files excluding resume.txt and README.md
+files=$(git diff --cached --name-only --diff-filter=ACM | grep -Ev '^(resume.txt|README.md)$')
+
+if [ -z "$files" ]; then
+  echo "No files staged for commit."
+  exit 0
+fi
+
+[ ! -f "resume.txt" ] && touch "resume.txt"
+tmp_resume=$(mktemp)
+echo -e "--- Commit $(date) ---" >> "$tmp_resume"
+
+# Helper function: decide if a file should be analyzed
+should_analyze() {
+    local f="$1"
+    case "$f" in (*.gitignore|*.DS_Store|README-template.md)
+            return 1 ;;  # skip
+        esac
+            return 0 ;;
+}
+
+# Gather all relevant file content + AI-inferred description
+for file in $files; do
+    if [ -f "$file" ] && should_analyze "$file"; then
+        echo -e "\nFile: $file\n" >> "$tmp_resume"
+        content=$(cat "$file")
+
+        # AI prompt for per-file description
+        ai_prompt="You are a software engineer. Provide a **concise description of the purpose** of this file, including:
+- If it's a source code file, mention what classes, functions, or logic it implements.
+- If it’s a pom.xml (Java), explain dependencies and where they are used in the code.
+- Skip trivial or config-only files (like .gitignore).
+
+File path: $file
+Content:
+$content
+"
+
+        # Run StarCoder 3B
+        description=$(echo "$ai_prompt" | ollama run starcoder:3b)
+
+        echo "Inferred Description: $description" >> "$tmp_resume"
+        echo "$content" >> "$tmp_resume"
+        echo -e "\n---\n" >> "$tmp_resume"
+    fi
+done
+
+mv "$tmp_resume" "resume.txt"
+git add resume.txt
+
+echo "resume.txt generated with AI-inferred file descriptions."
+
+# Generate README.md using template
+template=$(cat README-template.md)
+readme_prompt="You are a senior software engineer. Using the template below, generate a **professional, GitHub-ready README.md** for the project. Use resume.txt content to fill sections. Explain important files in detail (e.g., Java classes, dependencies in pom.xml and their usage).
+
+Template:
+$template
+
+Files content (resume.txt):
+$(cat resume.txt)
+
+Generate markdown that is easy to read, with headings, file summaries, dependencies, code snippets, usage instructions, and TODOs.
+"
+
+# Run StarCoder 3B for README generation
+readme_content=$(echo "$readme_prompt" | ollama run starcoder:3b)
+echo "$readme_content" > README.md
+git add README.md
+
+echo "README.md generated and staged for commit."
